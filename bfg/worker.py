@@ -1,6 +1,8 @@
+import random
 import time
-import multiprocessing as mp
+# import multiprocessing as mp
 import threading as th
+from concurrent.futures import ProcessPoolExecutor
 from queue import Empty, Full
 from .util import FactoryBase
 from .module_exceptions import ConfigurationError
@@ -9,7 +11,6 @@ import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
@@ -24,8 +25,9 @@ class BFG(object):
     A BFG load generator that manages multiple workers as processes
     and feeds them with tasks
     '''
+
     def __init__(
-            self, gun, load_plan, results, name, instances, event_loop):
+            self, gun, load_plan, results, name, instances, event_loop: asyncio.BaseEventLoop):
         self.name = name
         self.instances = instances
         self.gun = gun
@@ -37,49 +39,48 @@ class BFG(object):
 Name: {name}
 Instances: {instances}
 Gun: {gun.__class__.__name__}
-'''.format(
-            name=self.name,
-            instances=self.instances,
-            gun=gun,
-        ))
-        self.quit = mp.Event()
-        self.task_queue = mp.Queue(1024)
-        self.pool = [
-            mp.Process(target=self._worker, name="%s-%s" % (self.name, i))
-            for i in range(0, self.instances)]
+'''.format(name=self.name, instances=self.instances, gun=gun))
+        # self.quit = mp.Event()
+        # self.task_queue = mp.Queue(1024)
+        # self.pool = [
+        #     mp.Process(target=self._worker, name="%s-%s" % (self.name, i))
+        #     for i in range(0, self.instances)]
+        self.executor = ProcessPoolExecutor(self.instances)
         self.workers_finished = False
 
-    def start(self):
+    async def start(self):
         self.start_time = time.time()
-        for process in self.pool:
-            process.daemon = True
-            process.start()
-        self.event_loop.create_task(self._feeder())
+        tasks = [self.event_loop.run_in_executor(self.executor, self.gun.shoot, task) for task in self.load_plan]
+        completed, pending = await asyncio.wait(tasks)
+        # for process in self.pool:
+        #     process.daemon = True
+        #     process.start()
+        # self.event_loop.create_task(self._feeder())
 
-    async def _wait(self):
-        try:
-            logger.info("%s is waiting for workers", self.name)
-            while mp.active_children():
-                logger.debug("Active children: %d", len(mp.active_children()))
-                await asyncio.sleep(1)
-            logger.info("All workers of %s have exited", self.name)
-            self.workers_finished = True
-        except (KeyboardInterrupt, SystemExit):
-            self.task_queue.close()
-            self.quit.set()
-            while mp.active_children():
-                logger.debug("Active children: %d", len(mp.active_children()))
-                await asyncio.sleep(1)
-            logger.info("All workers of %s have exited", self.name)
-            self.workers_finished = True
+    # async def _wait(self):
+    #     try:
+    #         logger.info("%s is waiting for workers", self.name)
+    #         while mp.active_children():
+    #             logger.debug("Active children: %d", len(mp.active_children()))
+    #             await asyncio.sleep(1)
+    #         logger.info("All workers of %s have exited", self.name)
+    #         self.workers_finished = True
+    #     except (KeyboardInterrupt, SystemExit):
+    #         self.task_queue.close()
+    #         self.quit.set()
+    #         while mp.active_children():
+    #             logger.debug("Active children: %d", len(mp.active_children()))
+    #             await asyncio.sleep(1)
+    #         logger.info("All workers of %s have exited", self.name)
+    #         self.workers_finished = True
 
-    def running(self):
-        '''
-        True while there are alive workers out there. Tank
-        will quit when this would become False
-        '''
-        #return not self.workers_finished
-        return len(mp.active_children())
+    # def running(self):
+    #     '''
+    #     True while there are alive workers out there. Tank
+    #     will quit when this would become False
+    #     '''
+    #     # return not self.workers_finished
+    #     return len(mp.active_children())
 
     def stop(self):
         '''
@@ -156,7 +157,6 @@ Gun: {gun.__class__.__name__}
                     break
         self.gun.teardown()
 
-
 class BFGFactory(FactoryBase):
     FACTORY_NAME = 'bfg'
 
@@ -167,10 +167,8 @@ class BFGFactory(FactoryBase):
                 'ammo', bfg_config.get('ammo'))
             schedule = self.component_factory.get_factory(
                 'schedule', bfg_config.get('schedule'))
-            lp = (
-                Task(ts, bfg_name, marker, data)
-                for ts, (marker, data) in zip(schedule, ammo))
-            return BFG(
+            lp = [Task(ts, bfg_name, marker, data) for ts, (marker, data) in zip(schedule, ammo)]
+            return MyWorker(
                 name=bfg_name,
                 gun=self.component_factory.get_factory(
                     'gun', bfg_config.get('gun')),
@@ -184,3 +182,19 @@ class BFGFactory(FactoryBase):
         else:
             raise ConfigurationError(
                 "Configuration for '%s' BFG not found" % bfg_name)
+
+
+class MyWorker(object):
+    def __init__(self, name, gun, load_plan, instances, results, event_loop):
+        self.gun = gun
+        self.load_plan = load_plan
+
+    def execute(self, task):
+        self.start_time = time.time()
+        self.gun.setup()
+        task = task._replace(ts=self.start_time + (task.ts / 1000.0))
+        delay = task.ts - time.time()
+        if delay > 0:
+            time.sleep(delay)
+        self.gun.shoot(task)
+        self.gun.teardown()

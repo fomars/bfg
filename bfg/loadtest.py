@@ -1,4 +1,6 @@
 ''' Load test: entry point '''
+import concurrent.futures
+
 from .worker import BFG
 from .config import ComponentFactory
 import time
@@ -22,9 +24,15 @@ class LoadTest(object):
         self.event_loop.close()
 
     def run_test(self):
-        self.event_loop.run_until_complete(self._test())
+        executor = concurrent.futures.ProcessPoolExecutor(10)
+        try:
+            self.event_loop.run_until_complete(
+                self._test(executor)
+            )
+        finally:
+            self.event_loop.close()
 
-    async def _test(self):
+    async def _test(self, executor):
         ''' Main coroutine. Manage components' lifecycle '''
 
         # Configure factories using config files
@@ -39,10 +47,17 @@ class LoadTest(object):
 
         # Start workers and wait for them asyncronously
         logger.info("Starting workers")
-        [worker.start() for worker in workers]
-        logger.info("Waiting for workers")
-        while any(worker.running() for worker in workers):
-            await asyncio.sleep(1)
+        # [worker.start() for worker in workers]
+        loop = asyncio.get_event_loop()
+        blocking_tasks = []
+        for worker in workers:
+            blocking_tasks += [loop.run_in_executor(executor, worker.execute, task) for task in worker.load_plan]
+        completed, pending = await asyncio.wait(blocking_tasks)
+        results = [t.result() for t in completed]
+        print('results: {}'.format(results))
+        # logger.info("Waiting for workers")
+        # while any(worker.running() for worker in workers):
+        #     await asyncio.sleep(1)
         logger.info("All workers finished")
 
         # Stop aggregator
