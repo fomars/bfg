@@ -8,7 +8,7 @@ import yaml
 import pytoml
 import json
 import sys
-from .loadtest import LoadTest
+from bfg.loadtest import LoadTest
 
 
 LOG = logging.getLogger(__name__)

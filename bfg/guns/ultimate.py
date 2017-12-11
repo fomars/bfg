@@ -52,14 +52,14 @@ class UltimateGun(GunBase):
         if callable(getattr(self.load_test, "teardown", None)):
             self.load_test.teardown()
 
-    def shoot(self, task):
+    async def shoot(self, task):
         marker = task.marker.rsplit("#", 1)[0]  # support enum_ammo
         if not marker:
             marker = "default"
         scenario = getattr(self.load_test, marker, None)
         if callable(scenario):
             try:
-                scenario(task)
+                await scenario(task)
             except Exception as e:
                 logger.warning(
                     "Scenario %s failed with %s",
