@@ -21,7 +21,7 @@ def init_logging(debug=False, filename='bfg.log'):
     dbg_formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    dbg_handler = logging.FileHandler(filename)
+    dbg_handler = logging.FileHandler(filename, mode='w')
     dbg_handler.setLevel(debug)
     dbg_handler.setFormatter(dbg_formatter)
 
