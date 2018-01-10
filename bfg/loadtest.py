@@ -1,8 +1,6 @@
 ''' Load test: entry point '''
 from .worker import BFG
 from .config import ComponentFactory
-import time
-import numpy as np
 import asyncio
 import logging
 
@@ -22,9 +20,9 @@ class LoadTest(object):
         self.event_loop.close()
 
     def run_test(self):
-        self.event_loop.run_until_complete(self._test())
+        self._test()
 
-    async def _test(self):
+    def _test(self):
         ''' Main coroutine. Manage components' lifecycle '''
 
         # Configure factories using config files
@@ -41,10 +39,11 @@ class LoadTest(object):
         logger.info("Starting workers")
         [worker.start() for worker in workers]
         logger.info("Waiting for workers")
-        while any(worker.running() for worker in workers):
-            await asyncio.sleep(1)
+        [worker.wait_for_finish() for worker in workers]
+        # while any(worker.running() for worker in workers):
+        #     time.sleep(1)
         logger.info("All workers finished")
 
         # Stop aggregator
         rs = cf.get_factory('aggregator', 'lunapark')
-        await rs.stop()
+        self.event_loop.run_until_complete(rs.stop())

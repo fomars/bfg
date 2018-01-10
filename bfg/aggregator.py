@@ -65,7 +65,7 @@ class CachingAggregator(object):
 
     def __init__(
             self, event_loop,
-            cache_depth=5, listeners=[],
+            cache_depth=5, listeners=None,
             raw_filename='result.samples'):
         self.raw_file = open(raw_filename, 'w')
         self.first_write = True
@@ -77,7 +77,7 @@ class CachingAggregator(object):
         self._stop = False
         self.reader_stopped = False
         self.aggregator_stopped = False
-        self.listeners = listeners
+        self.listeners = [] if listeners is None else listeners
         self.event_loop.create_task(self._reader())
         self.event_loop.create_task(self._aggregator())
 

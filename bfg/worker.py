@@ -19,43 +19,52 @@ def signal_handler(signum, frame):
     pass
 
 
-async def async_shooter(_id, gun, task_queue, quit_event, start_time):
-    logger.info("Started shooter process: %s", mp.current_process().name)
+async def shoot_with_delay(task, gun, start_time):
+    task = task._replace(ts=start_time + (task.ts / 1000.0))
+    delay = task.ts - time.time()
+    # logger.info('Task:\n{}\nDelay: {}'.format(task, delay))
+    if delay > 0:
+        await asyncio.sleep(delay)
+    await gun.shoot(task)
+
+
+async def async_shooter(_id, gun, task_queue, params_ready_event, quit_event, start_time):
+    logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
     gun.setup()
-    while not quit_event.is_set():
+    while not params_ready_event.is_set():
         try:
-            task = task_queue.get(timeout=1)
+            task = task_queue.get(True, timeout=1)
             if not task:
                 logger.info(
                     "Got poison pill. Exiting %s",
                     mp.current_process().name)
                 break
-            task = task._replace(ts=start_time + (task.ts / 1000.0))
-            delay = task.ts - time.time()
-            if delay > 0:
-                time.sleep(delay)
-            await gun.shoot(task)
+            await shoot_with_delay(task, gun, start_time)
+        except Empty:
+            continue
         except (KeyboardInterrupt, SystemExit):
             break
-        except Empty:
-            if quit_event.is_set():
-                logger.debug(
-                    "Empty queue and quit_event flag. Exiting %s",
-                    mp.current_process().name)
+    else:
+        while True:
+            try:
+                task = task_queue.get_nowait()
+                if not task:
+                    logger.info(
+                        "Got poison pill. Exiting %s",
+                        mp.current_process().name)
+                    break
+                await shoot_with_delay(task, gun, start_time)
+            except Empty:
                 break
     gun.teardown()
 
 
-def run_worker(n_of_instances, task_queue, gun, quit_event):
-    # manager = mp.Manager()
-    # params_queue = manager.Queue()
-    # params = 'abcdefghijklmnoprstuvwxyz'
-    # [params_queue.put(param) for param in params]
-    # results_queue = manager.Queue()
+def run_worker(n_of_instances, task_queue, gun, params_ready_event, quit_event):
+    logger.info("Started shooter worker: %s", mp.current_process().name)
     start_time = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    futures = [async_shooter(i, gun, task_queue, quit_event, start_time) for i in range(n_of_instances)]
+    futures = [async_shooter(i, gun, task_queue, params_ready_event, quit_event, start_time) for i in range(n_of_instances)]
     gathered = asyncio.gather(*futures)
     try:
         loop.run_until_complete(gathered)
@@ -63,19 +72,24 @@ def run_worker(n_of_instances, task_queue, gun, quit_event):
         loop.close()
 
 
+def feed_params(load_plan, params_queue, params_ready_event, gun_name):
+    for task in load_plan:
+        task = task._replace(bfg=gun_name)
+        params_queue.put_nowait(task)
+    params_ready_event.set()
+
+
 class BFG(object):
     '''
     A BFG load generator that manages multiple workers as processes
     and feeds them with tasks
     '''
-    def __init__(
-            self, gun, load_plan, results, name, instances, event_loop):
+    def __init__(self, gun, load_plan, results, name, workers_num, instances_per_worker=4):
         self.name = name
-        self.instances = instances
+        self.workers_n = workers_num
         self.gun = gun
         self.gun.results = results
         self.load_plan = load_plan
-        self.event_loop = event_loop
         logger.info(
             '''
 Name: {name}
@@ -83,25 +97,34 @@ Instances: {instances}
 Gun: {gun.__class__.__name__}
 '''.format(
             name=self.name,
-            instances=self.instances,
+            instances=self.workers_n,
             gun=gun,
         ))
         manager = mp.Manager()
         self.quit = manager.Event()
         self.task_queue = manager.Queue(1024)
-        n_of_instances = 20
-        self.pool = [
+        self.params_ready_event = manager.Event()
+        n_of_instances = instances_per_worker
+        self.workers = [
             mp.Process(target=run_worker,
-                       args=(n_of_instances, self.task_queue, gun, self.quit),
+                       args=(n_of_instances, self.task_queue, gun, self.params_ready_event, self.quit),
                        name="%s-%s" % (self.name, i))
-            for i in range(0, self.instances)]
+            for i in range(0, self.workers_n)]
+        self.p_feeder = mp.Process(target=feed_params, args=(self.load_plan,
+                                                             self.task_queue,
+                                                             self.params_ready_event,
+                                                             self.name))
         self.workers_finished = False
 
     def start(self):
         self.start_time = time.time()
-        for process in self.pool:
+        self.p_feeder.start()
+        for process in self.workers:
             process.start()
-        self.event_loop.create_task(self._feeder())
+
+    def wait_for_finish(self):
+        self.p_feeder.join()
+        [worker.join() for worker in self.workers]
 
     async def _wait(self):
         try:
@@ -156,7 +179,7 @@ Gun: {gun.__class__.__name__}
                         return
                     else:
                         await asyncio.sleep(1)
-        workers_count = self.instances
+        workers_count = self.workers_n
         logger.info(
             "%s have feeded all data. Publishing %d poison pills",
             self.name, workers_count)
@@ -180,10 +203,8 @@ Gun: {gun.__class__.__name__}
         loop = asyncio.SelectorEventLoop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(self.async_shooter())
-        
 
     async def async_shooter(self):
-
         logger.info("Started shooter process: %s", mp.current_process().name)
         self.gun.setup()
         while not self.quit.is_set():
@@ -228,11 +249,11 @@ class BFGFactory(FactoryBase):
                 gun=self.component_factory.get_factory(
                     'gun', bfg_config.get('gun')),
                 load_plan=lp,
-                instances=bfg_config.get('instances'),
+                workers_num=bfg_config.get('workers'),
                 results=self.component_factory.get_factory(
                     'aggregator',
                     bfg_config.get('aggregator')).results_queue,
-                event_loop=self.event_loop,
+                instances_per_worker=bfg_config.get('instances')
             )
         else:
             raise ConfigurationError(

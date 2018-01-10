@@ -1,3 +1,3 @@
-/ case1
-/ case2
+/api/job/create.json case1
+/api/job/create.json case2
 /
