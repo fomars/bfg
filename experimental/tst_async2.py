@@ -57,6 +57,12 @@ async def launch_tasks(n):
 
 #---------------- V3 -----------------------
 
+def signal_handler(loop, interrupted_event, _signal):
+    print("got signal %s: exit" % _signal)
+    interrupted_event.set()
+    loop.stop()
+
+
 async def test_script(param, results_queue, instance_id):
     start = time.time()
     # print('test {} started'.format(param))

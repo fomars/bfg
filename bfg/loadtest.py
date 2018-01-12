@@ -1,4 +1,6 @@
 ''' Load test: entry point '''
+import signal
+
 from .worker import BFG
 from .config import ComponentFactory
 import asyncio
@@ -35,9 +37,22 @@ class LoadTest(object):
             cf.get_factory('bfg', bfg_name)
             for bfg_name in cf.get_config('bfg')]
 
-        # Start workers and wait for them asyncronously
+        # Save a reference to the original signal handler for SIGINT.
+        default_handler = signal.getsignal(signal.SIGINT)
+        # Set signal handling of SIGINT to ignore mode.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        # Start workers
         logger.info("Starting workers")
         [worker.start() for worker in workers]
+
+        # restore signal handling for the parent process.
+        def signal_handler(signal, frame):
+            logger.info('Interrupting')
+            [worker.interrupt() for worker in workers]
+
+        signal.signal(signal.SIGINT, signal_handler)
+
         logger.info("Waiting for workers")
         [worker.wait_for_finish() for worker in workers]
         # while any(worker.running() for worker in workers):

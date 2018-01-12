@@ -1,7 +1,13 @@
+import signal
 import time
 import multiprocessing as mp
 import threading as th
 from queue import Empty, Full
+
+import functools
+
+import sys
+
 from .util import FactoryBase
 from .module_exceptions import ConfigurationError
 from collections import namedtuple
@@ -15,10 +21,6 @@ Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
 
 
-def signal_handler(signum, frame):
-    pass
-
-
 async def shoot_with_delay(task, gun, start_time):
     task = task._replace(ts=start_time + (task.ts / 1000.0))
     delay = task.ts - time.time()
@@ -28,24 +30,21 @@ async def shoot_with_delay(task, gun, start_time):
     await gun.shoot(task)
 
 
-async def async_shooter(_id, gun, task_queue, params_ready_event, quit_event, start_time):
+async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time):
     logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
     gun.setup()
-    while not params_ready_event.is_set():
-        try:
-            task = task_queue.get(True, timeout=1)
-            if not task:
-                logger.info(
-                    "Got poison pill. Exiting %s",
-                    mp.current_process().name)
-                break
-            await shoot_with_delay(task, gun, start_time)
-        except Empty:
-            continue
-        except (KeyboardInterrupt, SystemExit):
-            break
-    else:
-        while True:
+    while not interrupted_event.is_set():
+        if not params_ready_event.is_set():
+            try:
+                task = task_queue.get(True, timeout=1)
+                if not task:
+                    logger.info(
+                        "Got poison pill. Exiting %s",
+                        mp.current_process().name)
+                    break
+            except Empty:
+                continue
+        else:
             try:
                 task = task_queue.get_nowait()
                 if not task:
@@ -53,18 +52,19 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, quit_event, st
                         "Got poison pill. Exiting %s",
                         mp.current_process().name)
                     break
-                await shoot_with_delay(task, gun, start_time)
             except Empty:
                 break
+        await shoot_with_delay(task, gun, start_time)
     gun.teardown()
 
 
-def run_worker(n_of_instances, task_queue, gun, params_ready_event, quit_event):
+def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event):
     logger.info("Started shooter worker: %s", mp.current_process().name)
     start_time = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    futures = [async_shooter(i, gun, task_queue, params_ready_event, quit_event, start_time) for i in range(n_of_instances)]
+
+    futures = [async_shooter(i, gun, task_queue, params_ready_event, interrupted_event, start_time) for i in range(n_of_instances)]
     gathered = asyncio.gather(*futures)
     try:
         loop.run_until_complete(gathered)
@@ -72,10 +72,13 @@ def run_worker(n_of_instances, task_queue, gun, params_ready_event, quit_event):
         loop.close()
 
 
-def feed_params(load_plan, params_queue, params_ready_event, gun_name):
+def feed_params(load_plan, params_queue, params_ready_event, interrupted_event, gun_name):
     for task in load_plan:
-        task = task._replace(bfg=gun_name)
-        params_queue.put_nowait(task)
+        if interrupted_event.is_set():
+            break
+        else:
+            task = task._replace(bfg=gun_name)
+            params_queue.put(task)
     params_ready_event.set()
 
 
@@ -104,6 +107,7 @@ Gun: {gun.__class__.__name__}
         self.quit = manager.Event()
         self.task_queue = manager.Queue(1024)
         self.params_ready_event = manager.Event()
+        self.interrupted = manager.Event()
         n_of_instances = instances_per_worker
         self.workers = [
             mp.Process(target=run_worker,
@@ -113,6 +117,7 @@ Gun: {gun.__class__.__name__}
         self.p_feeder = mp.Process(target=feed_params, args=(self.load_plan,
                                                              self.task_queue,
                                                              self.params_ready_event,
+                                                             self.interrupted,
                                                              self.name))
         self.workers_finished = False
 
@@ -121,6 +126,9 @@ Gun: {gun.__class__.__name__}
         self.p_feeder.start()
         for process in self.workers:
             process.start()
+
+    def interrupt(self):
+        self.interrupted.set()
 
     def wait_for_finish(self):
         self.p_feeder.join()
