@@ -33,7 +33,7 @@ class LoadTest(object):
 
         # Create workers using 'bfg' section from config
         logger.info("Creating workers")
-        workers = [
+        guns = [
             cf.get_factory('bfg', bfg_name)
             for bfg_name in cf.get_config('bfg')]
 
@@ -44,20 +44,20 @@ class LoadTest(object):
 
         # Start workers
         logger.info("Starting workers")
-        [worker.start() for worker in workers]
+        [gun.start() for gun in guns]
 
         # restore signal handling for the parent process.
         def signal_handler(signal, frame):
             logger.info('Interrupting')
-            [worker.interrupt() for worker in workers]
+            [gun.interrupt() for gun in guns]
 
         signal.signal(signal.SIGINT, signal_handler)
 
-        logger.info("Waiting for workers")
-        [worker.wait_for_finish() for worker in workers]
+        logger.info("Waiting for guns")
+        [gun.wait_for_finish() for gun in guns]
         # while any(worker.running() for worker in workers):
         #     time.sleep(1)
-        logger.info("All workers finished")
+        logger.info("All guns finished")
 
         # Stop aggregator
         rs = cf.get_factory('aggregator', 'lunapark')

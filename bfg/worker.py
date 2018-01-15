@@ -1,18 +1,14 @@
-import signal
-import time
-import multiprocessing as mp
-import threading as th
-from queue import Empty, Full
-
-import functools
-
-import sys
-
-from .util import FactoryBase
-from .module_exceptions import ConfigurationError
-from collections import namedtuple
 import asyncio
 import logging
+import multiprocessing as mp
+import signal
+from multiprocessing.managers import SyncManager
+import time
+from collections import namedtuple
+from queue import Empty
+
+from .module_exceptions import ConfigurationError
+from .util import FactoryBase
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +65,25 @@ def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_
     try:
         loop.run_until_complete(gathered)
     finally:
+        logger.info('Closing loop')
         loop.close()
 
 
 def feed_params(load_plan, params_queue, params_ready_event, interrupted_event, gun_name):
     for task in load_plan:
         if interrupted_event.is_set():
+            logger.info('Feeding interrupted')
             break
         else:
             task = task._replace(bfg=gun_name)
             params_queue.put(task)
+    logger.info('Feeding concluded')
     params_ready_event.set()
+
+
+def mgr_init():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    logger.info('initialized manager')
 
 
 class BFG(object):
@@ -103,15 +107,15 @@ Gun: {gun.__class__.__name__}
             instances=self.workers_n,
             gun=gun,
         ))
-        manager = mp.Manager()
-        self.quit = manager.Event()
-        self.task_queue = manager.Queue(1024)
-        self.params_ready_event = manager.Event()
-        self.interrupted = manager.Event()
+        self.manager = SyncManager()
+        self.manager.start(mgr_init)
+        self.task_queue = self.manager.Queue(1024)
+        self.params_ready_event = self.manager.Event()
+        self.interrupted = self.manager.Event()
         n_of_instances = instances_per_worker
         self.workers = [
             mp.Process(target=run_worker,
-                       args=(n_of_instances, self.task_queue, gun, self.params_ready_event, self.quit),
+                       args=(n_of_instances, self.task_queue, gun, self.params_ready_event, self.interrupted),
                        name="%s-%s" % (self.name, i))
             for i in range(0, self.workers_n)]
         self.p_feeder = mp.Process(target=feed_params, args=(self.load_plan,
@@ -133,6 +137,8 @@ Gun: {gun.__class__.__name__}
     def wait_for_finish(self):
         self.p_feeder.join()
         [worker.join() for worker in self.workers]
+        logger.info('All workers finished')
+        self.manager.shutdown()
 
     async def _wait(self):
         try:
@@ -158,85 +164,6 @@ Gun: {gun.__class__.__name__}
         '''
         #return not self.workers_finished
         return len(mp.active_children())
-
-    def stop(self):
-        '''
-        Say the workers to finish their jobs and quit.
-        '''
-        self.quit.set()
-
-    async def _feeder(self):
-        '''
-        A feeder coroutine
-        '''
-        for task in self.load_plan:
-            task = task._replace(bfg=self.name)
-            if self.quit.is_set():
-                logger.info(
-                    "%s observed quit flag and not going to feed anymore",
-                    self.name)
-                return
-            # try putting a task to a queue unless there is a quit flag
-            # or all workers have exited
-            while True:
-                try:
-                    self.task_queue.put_nowait(task)
-                    break
-                except Full:
-                    if self.quit.is_set() or self.workers_finished:
-                        return
-                    else:
-                        await asyncio.sleep(1)
-        workers_count = self.workers_n
-        logger.info(
-            "%s have feeded all data. Publishing %d poison pills",
-            self.name, workers_count)
-        while True:
-            try:
-                [self.task_queue.put_nowait(None) for _ in range(
-                    0, workers_count)]
-                break
-            except Full:
-                logger.warning(
-                    "%s could not publish killer tasks."
-                    "task queue is full. Retry in 1s", self.name)
-                await asyncio.sleep(1)
-
-    def _worker(self):
-        '''
-        A worker that runs in a distinct process
-        '''
-
-        # TODO: implement asyncio eventloop here
-        loop = asyncio.SelectorEventLoop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.async_shooter())
-
-    async def async_shooter(self):
-        logger.info("Started shooter process: %s", mp.current_process().name)
-        self.gun.setup()
-        while not self.quit.is_set():
-            try:
-                task = self.task_queue.get(timeout=1)
-                if not task:
-                    logger.info(
-                        "Got poison pill. Exiting %s",
-                        mp.current_process().name)
-                    break
-                task = task._replace(ts=self.start_time + (task.ts / 1000.0))
-                delay = task.ts - time.time()
-                if delay > 0:
-                    time.sleep(delay)
-                self.gun.shoot(task)
-            except (KeyboardInterrupt, SystemExit):
-                break
-            except Empty:
-                if self.quit.is_set():
-                    logger.debug(
-                        "Empty queue and quit flag. Exiting %s",
-                        mp.current_process().name)
-                    break
-        self.gun.teardown()
 
 
 class BFGFactory(FactoryBase):
