@@ -59,6 +59,7 @@ class LoadTest(object):
         # Block until guns terminate
         futures = [asyncio.ensure_future(gun.wait_for_finish()) for gun in guns]
         self.event_loop.run_until_complete(asyncio.gather(*futures))
+        logger.info('All Guns finished')
         # Send aggregator stop signal
         aggregator.stop()
         # Block until remaining aggregator tasks finished

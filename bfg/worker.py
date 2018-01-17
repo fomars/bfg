@@ -5,7 +5,7 @@ import signal
 from multiprocessing.managers import SyncManager
 import time
 from collections import namedtuple
-from queue import Empty
+from queue import Empty, Full
 
 from .module_exceptions import ConfigurationError
 from .util import FactoryBase
@@ -27,9 +27,14 @@ async def shoot_with_delay(task, gun, start_time):
 
 
 async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time):
+    """
+
+    :type task_queue: mp.Queue
+    """
     logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
     gun.setup()
     while not interrupted_event.is_set():
+        # Read with retry while params are feeding
         if not params_ready_event.is_set():
             try:
                 task = task_queue.get(True, timeout=1)
@@ -40,6 +45,7 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_ev
                     break
             except Empty:
                 continue
+        # Once all params are fed, we can do get_nowait() and terminate when Empty is raised
         else:
             try:
                 task = task_queue.get_nowait()
@@ -51,6 +57,13 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_ev
             except Empty:
                 break
         await shoot_with_delay(task, gun, start_time)
+    else:
+        # clear queue if test was interrupted
+        while True:  # can't check with queue.empty() because of multiprocessing
+            try:
+                task_queue.get_nowait()
+            except Empty:
+                break
     gun.teardown()
 
 
@@ -65,20 +78,25 @@ def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_
     try:
         loop.run_until_complete(gathered)
     finally:
-        logger.info('Closing loop')
+        logger.info('Closing worker %s', mp.current_process().name)
         loop.close()
 
 
 def feed_params(load_plan, params_queue, params_ready_event, interrupted_event, gun_name):
     for task in load_plan:
-        if interrupted_event.is_set():
+        while not interrupted_event.is_set():
+            task = task._replace(bfg=gun_name)
+            # Avoid blocking on put when queue reaches maxsize
+            try:
+                params_queue.put_nowait(task)
+                break
+            except Full:
+                time.sleep(0.1)
+        else:
             logger.info('Feeding interrupted')
             break
-        else:
-            task = task._replace(bfg=gun_name)
-            params_queue.put(task)
-    logger.info('Feeding concluded')
     params_ready_event.set()
+    logger.info('Feeding concluded')
 
 
 def mgr_init():
@@ -134,7 +152,7 @@ Gun: {gun.__class__.__name__}
     def interrupt(self):
         self.interrupted.set()
 
-    async def wait_for_finish(self, timeout=1):
+    async def wait_for_finish(self, timeout=2):
         while self.p_feeder.is_alive():
             await asyncio.sleep(timeout)
         else:
@@ -142,6 +160,7 @@ Gun: {gun.__class__.__name__}
             logger.info('Feeder joined.')
 
         while any(worker.is_alive() for worker in self.workers):
+            logger.info('Some worker is still alive')
             await asyncio.sleep(timeout)
         else:
             [worker.join() for worker in self.workers]
