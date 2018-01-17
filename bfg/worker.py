@@ -134,10 +134,19 @@ Gun: {gun.__class__.__name__}
     def interrupt(self):
         self.interrupted.set()
 
-    def wait_for_finish(self):
-        self.p_feeder.join()
-        [worker.join() for worker in self.workers]
-        logger.info('All workers finished')
+    async def wait_for_finish(self, timeout=1):
+        while self.p_feeder.is_alive():
+            await asyncio.sleep(timeout)
+        else:
+            self.p_feeder.join()
+            logger.info('Feeder joined.')
+
+        while any(worker.is_alive() for worker in self.workers):
+            await asyncio.sleep(timeout)
+        else:
+            [worker.join() for worker in self.workers]
+            logger.info('All workers joined')
+
         self.manager.shutdown()
 
     async def _wait(self):

@@ -78,10 +78,10 @@ class CachingAggregator(object):
         self.reader_stopped = False
         self.aggregator_stopped = False
         self.listeners = [] if listeners is None else listeners
-        self.event_loop.create_task(self._reader())
-        self.event_loop.create_task(self._aggregator())
+        asyncio.ensure_future(self._reader())
+        asyncio.ensure_future(self._aggregator())
 
-    async def stop(self):
+    def stop(self):
         '''
         Set cache-depth to 0 in order to aggregate all the results in buffer.
         Aggregator will exit automatically when it observe that reader is
@@ -90,10 +90,6 @@ class CachingAggregator(object):
         '''
         self.cache_depth = 0  # empty the cache
         self._stop = True
-        while not self.reader_stopped:
-            await asyncio.sleep(1)
-        while not self.aggregator_stopped:
-            await asyncio.sleep(1)
 
     async def _reader(self):
         '''
