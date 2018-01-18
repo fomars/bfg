@@ -7,11 +7,12 @@ import time
 from collections import namedtuple
 from queue import Empty, Full
 
+import aiohttp
+
 from .module_exceptions import ConfigurationError
 from .util import FactoryBase
 
 logger = logging.getLogger(__name__)
-
 
 Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
@@ -26,13 +27,14 @@ async def shoot_with_delay(task, gun, start_time):
     await gun.shoot(task)
 
 
-async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time):
+async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time, session):
     """
 
     :type task_queue: mp.Queue
     """
     logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
-    gun.setup()
+
+    gun.setup(session)
     while not interrupted_event.is_set():
         # Read with retry while params are feeding
         if not params_ready_event.is_set():
@@ -67,16 +69,28 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_ev
     gun.teardown()
 
 
+async def run_with_aiohttp_session(event_loop, gun, task_queue, params_ready_event, interrupted_event, start_time,
+                                   n_of_instances):
+    connector = aiohttp.TCPConnector()  # (limit=config.concurrency)
+    async with aiohttp.ClientSession(loop=event_loop, connector=connector) as session:
+        futures = [asyncio.ensure_future(async_shooter(i, gun, task_queue,
+                                                       params_ready_event,
+                                                       interrupted_event,
+                                                       start_time, session)) for i in range(n_of_instances)]
+        await asyncio.wait(futures)
+
+
 def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event):
     logger.info("Started shooter worker: %s", mp.current_process().name)
     start_time = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    futures = [async_shooter(i, gun, task_queue, params_ready_event, interrupted_event, start_time) for i in range(n_of_instances)]
-    gathered = asyncio.gather(*futures)
+    # futures = [async_shooter(i, gun, task_queue, params_ready_event, interrupted_event, start_time) for i in range(n_of_instances)]
+    # gathered = asyncio.gather(*futures)
     try:
-        loop.run_until_complete(gathered)
+        loop.run_until_complete(run_with_aiohttp_session(loop, gun, task_queue, params_ready_event,
+                                                         interrupted_event, start_time, n_of_instances))
     finally:
         logger.info('Closing worker %s', mp.current_process().name)
         loop.close()
@@ -109,6 +123,7 @@ class BFG(object):
     A BFG load generator that manages multiple workers as processes
     and feeds them with tasks
     '''
+
     def __init__(self, gun, load_plan, results, name, workers_num, instances_per_worker=4):
         self.name = name
         self.workers_n = workers_num
@@ -121,10 +136,10 @@ Name: {name}
 Instances: {instances}
 Gun: {gun.__class__.__name__}
 '''.format(
-            name=self.name,
-            instances=self.workers_n,
-            gun=gun,
-        ))
+                name=self.name,
+                instances=self.workers_n,
+                gun=gun,
+            ))
         self.manager = SyncManager()
         self.manager.start(mgr_init)
         self.task_queue = self.manager.Queue(1024)
@@ -186,11 +201,11 @@ Gun: {gun.__class__.__name__}
             self.workers_finished = True
 
     def running(self):
-        '''
+        """
         True while there are alive workers out there. Tank
         will quit when this would become False
-        '''
-        #return not self.workers_finished
+        """
+        # return not self.workers_finished
         return len(mp.active_children())
 
 

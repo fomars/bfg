@@ -110,7 +110,7 @@ class GunBase(object):
             sw.stop()
             self.results.put(sw.as_sample())
 
-    def setup(self):
+    def setup(self, session):
         pass
 
     def shoot(self, task):

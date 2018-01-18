@@ -3,9 +3,6 @@ Ultimate gun
 '''
 import imp
 from .base import GunBase, Sample
-from queue import Full
-import time
-from contextlib import contextmanager
 import logging
 
 
@@ -44,9 +41,9 @@ class UltimateGun(GunBase):
                 (class_name, module_name))
         self.load_test = test_class(self)
 
-    def setup(self):
+    def setup(self, session):
         if callable(getattr(self.load_test, "setup", None)):
-            self.load_test.setup(self.init_param)
+            self.load_test.setup(session, self.init_param)
 
     def teardown(self):
         if callable(getattr(self.load_test, "teardown", None)):
