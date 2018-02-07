@@ -139,3 +139,23 @@ class FactoryBase(object):
 
     def get(self, key):
         raise NotImplementedError("Calling method from abstract class")
+
+
+class Mean(object):
+    def __init__(self, values=None):
+        if values is None:
+            self.__weight = 0
+            self.__sum = 0
+        else:
+            self.__weight = len(values)
+            self.__sum = sum(values)
+
+    def update(self, value, weight=1):
+        self.__sum += value
+        self.__weight += weight
+
+    def get(self):
+        return self.__sum / self.__weight
+
+    def __str__(self):
+        return str(self.get())

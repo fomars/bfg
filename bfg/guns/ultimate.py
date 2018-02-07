@@ -1,6 +1,7 @@
 '''
 Ultimate gun
 '''
+import asyncio
 import imp
 from .base import GunBase, Sample
 import logging
@@ -57,6 +58,8 @@ class UltimateGun(GunBase):
         if callable(scenario):
             try:
                 await scenario(task)
+            except asyncio.TimeoutError:
+                logger.info('Scenario timed out')
             except Exception as e:
                 logger.warning(
                     "Scenario %s failed with %s",

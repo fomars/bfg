@@ -1,79 +1,11 @@
 import asyncio
 import json
-import random
-from queue import Empty
 import multiprocessing as mp
-import aiohttp
-import async_timeout
 import time
+from queue import Empty
 
-
-async def create_job(session):
-    async with async_timeout.timeout(10):
-        async with session.post('https://lunapark.test.yandex-team.ru/api/job/create.json',
-                                json={"task": "LOAD-204",
-                                      "person": "fomars",
-                                      "tank": "localhost",
-                                      "host": "localhost",
-                                      "port": 5000}) as response:
-            # return await response.json()
-            # print(await response.text())
-            return await response.json()
-
-
-async def get_summary(session, job):
-    async with async_timeout.timeout(10):
-        async with session.get('https://lunapark.test.yandex-team.ru/api/job/{}/summary.json'.format(job)) as response:
-            return await response.json()
-
-
-async def task(session, i):
-    start = time.time()
-    # print('Task {} started'.format(i))
-    job_info = await create_job(session)
-    # print('Job {} for task {} created within {:.2f} seconds'.format(job_info, i, time.time() - start))
-    summary = await get_summary(session, job_info[0]['job'])
-    # print('Task {} took {:.2f} seconds'.format(i, time.time() - start))
-    return summary
-
-
-async def tasks(n):
-    start = time.time()
-    tsks = [asyncio.ensure_future(task(i)) for i in range(n)]
-    await asyncio.wait(tsks)
-    print('Took {:.2f} sec'.format(time.time() - start))
-
-
-async def launch_tasks(n):
-    start = time.time()
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
-        futures = [task(session, i) for i in range(n)]
-        for future in asyncio.as_completed(futures):
-            result = await future
-            # print(yaml.dump(result))
-    return time.time() - start
-
-
-# ---------------- V3 -----------------------
-
-class Mean(object):
-    def __init__(self, values=None):
-        if values is None:
-            self.__weight = 0
-            self.__sum = 0
-        else:
-            self.__weight = len(values)
-            self.__sum = sum(values)
-
-    def update(self, value, weight=1):
-        self.__sum += value
-        self.__weight += weight
-
-    def get(self):
-        return self.__sum / self.__weight
-
-    def __str__(self):
-        return str(self.get())
+# ---------------- V4 -----------------------
+from bfg.util import Mean
 
 
 def signal_handler(loop, interrupted_event, _signal):
@@ -128,9 +60,11 @@ def run_worker(_id, n_of_instances, params_queue, results_queue, params_ready_ev
         print('Worker {} finished'.format(_id))
 
 
+PARAMS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' * 250 # 13000 chars
+
+
 def feed_params(params_queue, params_ready_event):
-    params = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' * 1000 # 52000 chars
-    for param in params:
+    for param in PARAMS:
         # time.sleep(random.random()*0.05)
         params_queue.put(param)
     params_ready_event.set()
@@ -159,7 +93,7 @@ def main(n_of_workers, instances_per_worker, sleep_time):
 
     [p_worker.start() for p_worker in p_workers]
     mean_duration = Mean()
-    with open('results{}-{}.jsonl'.format(n_of_workers, instances_per_worker), 'w') as output:
+    with open('results{}-{}-{}.jsonl'.format(n_of_workers, instances_per_worker, sleep_time), 'w') as output:
         while True:
             try:
                 result = results_queue.get(True, 1)
@@ -179,7 +113,7 @@ def main(n_of_workers, instances_per_worker, sleep_time):
 
 if __name__ == '__main__':
     results = []
-    for index, params in enumerate([(4, 1280, 0.1), (4, 1280, 0.2), (4, 1280, 1), (4, 1280, 2)]):  # (4, 1024), (4, 1280), (4, 1536), (4, 1792), (4, 2048), (4, 3072)
+    for index, params in enumerate([(1, 512, 0.1), (1, 512, 0.2), (1, 512, 1), (1, 512, 2)]):  # (4, 1024), (4, 1280), (4, 1536), (4, 1792), (4, 2048), (4, 3072)
         workers, instances, sleep_time = params
         print('Test {}: {} workers * {} instances, sleep {}s'.format(index, workers, instances, sleep_time))
         total_time, mean_time = main(workers, instances, sleep_time)
@@ -191,4 +125,4 @@ if __name__ == '__main__':
     print('workers\tinstances\tsleep\ttotal time\t\t\tmean duration\t\t\trps')
     for res in results:
         print('{}\t\t{}\t\t{}\t\t{}\t{}\t{}'.format(res['workers'],res['instances'], res['sleep'],
-                                                  res['total_time'], res['mean_test_time'], 52000/res['total_time']))
+                                                  res['total_time'], res['mean_test_time'], len(PARAMS)/res['total_time']))

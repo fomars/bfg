@@ -20,10 +20,12 @@ Task = namedtuple(
 
 async def shoot_with_delay(task, gun, start_time):
     task = task._replace(ts=start_time + (task.ts / 1000.0))
-    delay = task.ts - time.time()
-    # logger.info('Task:\n{}\nDelay: {}'.format(task, delay))
+    delay = task.ts - asyncio.get_event_loop().time()
     if delay > 0:
+        start = time.time()
         await asyncio.sleep(delay)
+    if delay < -0.2:
+        logger.warning('Delay: {}'.format(delay))
     await gun.shoot(task)
 
 
@@ -32,20 +34,21 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_ev
 
     :type task_queue: mp.Queue
     """
-    logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
+    # logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
 
     gun.setup(session)
     while not interrupted_event.is_set():
         # Read with retry while params are feeding
         if not params_ready_event.is_set():
             try:
-                task = task_queue.get(True, timeout=1)
+                task = task_queue.get_nowait()
                 if not task:
                     logger.info(
                         "Got poison pill. Exiting %s",
                         mp.current_process().name)
                     break
             except Empty:
+                await asyncio.sleep(0.1)
                 continue
         # Once all params are fed, we can do get_nowait() and terminate when Empty is raised
         else:
@@ -68,6 +71,59 @@ async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_ev
                 break
     gun.teardown()
 
+#  todo: experiment later with Loop.call_at()
+# async def scheduler(gun, task_queue, params_ready_event, interrupted_event, start_time, event_loop):
+#     """
+#
+#     :type task_queue: mp.Queue
+#     """
+#     logger.info("Started scheduler {}".format(mp.current_process().name))
+#
+#     tasks_pack_size = 2000
+#     tasks = []
+#
+#     async with aiohttp.ClientSession(loop=event_loop) as session:
+#         gun.setup(session)
+#         while not interrupted_event.is_set():
+#             # Read with retry while params are feeding
+#             if not params_ready_event.is_set():
+#                 try:
+#                     task = task_queue.get(True, timeout=1)
+#                     if not task:
+#                         logger.info(
+#                             "Got poison pill. Exiting %s",
+#                             mp.current_process().name)
+#                         break
+#                 except Empty:
+#                     continue
+#             # Once all params are fed, we can do get_nowait() and terminate when Empty is raised
+#             else:
+#                 try:
+#                     task = task_queue.get_nowait()
+#                     if not task:
+#                         logger.info(
+#                             "Got poison pill. Exiting %s",
+#                             mp.current_process().name)
+#                         break
+#                 except Empty:
+#                     break
+#             # actually schedule task
+#             tasks = [task for task in tasks if not task.done()] +\
+#                 [asyncio.ensure_future(shoot_with_delay(task, gun, start_time))]
+#             # wait if there are too many
+#             while len(tasks) > tasks_pack_size:
+#                 await asyncio.sleep(0.1)
+#                 tasks = [task for task in tasks if not task.done()]
+#         else:
+#             # clear queue if test was interrupted
+#             while True:  # can't check with queue.empty() because of multiprocessing
+#                 try:
+#                     task_queue.get_nowait()
+#                 except Empty:
+#                     break
+#         await asyncio.wait(tasks)
+#     gun.teardown()
+
 
 async def run_with_aiohttp_session(event_loop, gun, task_queue, params_ready_event, interrupted_event, start_time,
                                    n_of_instances):
@@ -82,9 +138,9 @@ async def run_with_aiohttp_session(event_loop, gun, task_queue, params_ready_eve
 
 def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event):
     logger.info("Started shooter worker: %s", mp.current_process().name)
-    start_time = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    start_time = loop.time()
 
     # futures = [async_shooter(i, gun, task_queue, params_ready_event, interrupted_event, start_time) for i in range(n_of_instances)]
     # gathered = asyncio.gather(*futures)
@@ -105,6 +161,7 @@ def feed_params(load_plan, params_queue, params_ready_event, interrupted_event, 
                 params_queue.put_nowait(task)
                 break
             except Full:
+                logger.debug("Params queue is full")
                 time.sleep(0.1)
         else:
             logger.info('Feeding interrupted')
@@ -142,7 +199,7 @@ Gun: {gun.__class__.__name__}
             ))
         self.manager = SyncManager()
         self.manager.start(mgr_init)
-        self.task_queue = self.manager.Queue(1024)
+        self.task_queue = self.manager.Queue(4096)
         self.params_ready_event = self.manager.Event()
         self.interrupted = self.manager.Event()
         n_of_instances = instances_per_worker

@@ -65,7 +65,7 @@ class CachingAggregator(object):
 
     def __init__(
             self, event_loop,
-            cache_depth=5, listeners=None,
+            cache_depth=10, listeners=None,
             raw_filename='result.samples'):
         self.raw_file = open(raw_filename, 'w')
         self.first_write = True
