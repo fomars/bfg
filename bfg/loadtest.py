@@ -46,7 +46,7 @@ class LoadTest(object):
 
         # Restore signal handling for the parent process.
         def signal_handler(signal, frame):
-            logger.info('Interrupting')
+            logger.info('\n\n\nSIGINT received\nInterrupting\n\n')
             [gun.interrupt() for gun in guns]
 
         signal.signal(signal.SIGINT, signal_handler)

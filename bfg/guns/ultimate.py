@@ -42,22 +42,22 @@ class UltimateGun(GunBase):
                 (class_name, module_name))
         self.load_test = test_class(self)
 
-    def setup(self, session):
+    def setup(self):
         if callable(getattr(self.load_test, "setup", None)):
-            self.load_test.setup(session, self.init_param)
+            self.load_test.setup(self.init_param)
 
     def teardown(self):
         if callable(getattr(self.load_test, "teardown", None)):
             self.load_test.teardown()
 
-    async def shoot(self, task):
+    def shoot(self, task):
         marker = task.marker.rsplit("#", 1)[0]  # support enum_ammo
         if not marker:
             marker = "default"
         scenario = getattr(self.load_test, marker, None)
         if callable(scenario):
             try:
-                await scenario(task)
+                scenario(task)
             except asyncio.TimeoutError:
                 logger.info('Scenario timed out')
             except Exception as e:
