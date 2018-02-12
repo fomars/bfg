@@ -19,15 +19,21 @@ Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
 
 
-def shoot_with_delay(task, gun, start_time):
+TOLERANCE = 0.002
+
+
+def shoot_with_delay(task, gun, start_time, interrupted_event):
     task = task._replace(ts=start_time + (task.ts / 1000.0))
     delay = task.ts - time.time()
-    if delay > 0:
-        start = time.time()
-        time.sleep(delay)
-    if delay < -0.2:
-        logger.warning('Delay: {}'.format(delay))
-    gun.shoot(task)
+    while task.ts - time.time() > TOLERANCE:
+        if not interrupted_event.is_set():
+            delay = delay/2
+            time.sleep(delay)
+        else:
+            logger.debug('Interrupting scheduled test')
+            return
+    else:
+        gun.shoot(task)
 
 
 async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time, session):
@@ -99,7 +105,7 @@ def run_instance(gun, interrupted_event, params_ready_event, task_queue, start_t
                         break
                 except Empty:
                     break
-            shoot_with_delay(task, gun, start_time)
+            shoot_with_delay(task, gun, start_time, interrupted_event)
         else:
             # clear queue if test was interrupted
             while True:  # can't check with queue.empty() because of multiprocessing
@@ -127,7 +133,6 @@ def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_
     # finally:
     #     logger.info('Closing worker %s', mp.current_process().name)
     #     loop.close()
-    interrupted = threading.Event()
     try:
         threads = [threading.Thread(target=run_instance, args=(gun, interrupted_event, params_ready_event,
                                                                task_queue, start_time))
