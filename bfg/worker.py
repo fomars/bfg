@@ -19,16 +19,15 @@ Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
 
 
-TOLERANCE = 0.002
+TOLERANCE = 0.0001
 
 
 def shoot_with_delay(task, gun, start_time, interrupted_event):
+    MAX_SLEEP = 5
     task = task._replace(ts=start_time + (task.ts / 1000.0))
-    delay = task.ts - time.time()
     while task.ts - time.time() > TOLERANCE:
         if not interrupted_event.is_set():
-            delay = delay/2
-            time.sleep(delay)
+            time.sleep(min(MAX_SLEEP, task.ts - time.time()))
         else:
             logger.debug('Interrupting scheduled test')
             return
@@ -36,51 +35,7 @@ def shoot_with_delay(task, gun, start_time, interrupted_event):
         gun.shoot(task)
 
 
-async def async_shooter(_id, gun, task_queue, params_ready_event, interrupted_event, start_time, session):
-    """
-
-    :type task_queue: mp.Queue
-    """
-    # logger.info("Started shooter instance {} of worker {}".format(_id, mp.current_process().name))
-
-    gun.setup()
-    while not interrupted_event.is_set():
-        # Read with retry while params are feeding
-        if not params_ready_event.is_set():
-            try:
-                task = task_queue.get_nowait()
-                if not task:
-                    logger.info(
-                        "Got poison pill. Exiting %s",
-                        mp.current_process().name)
-                    break
-            except Empty:
-                await asyncio.sleep(0.1)
-                continue
-        # Once all params are fed, we can do get_nowait() and terminate when Empty is raised
-        else:
-            try:
-                task = task_queue.get_nowait()
-                if not task:
-                    logger.info(
-                        "Got poison pill. Exiting %s",
-                        mp.current_process().name)
-                    break
-            except Empty:
-                break
-        await shoot_with_delay(task, gun, start_time)
-    else:
-        # clear queue if test was interrupted
-        while True:  # can't check with queue.empty() because of multiprocessing
-            try:
-                task_queue.get_nowait()
-            except Empty:
-                break
-    gun.teardown()
-
-
 def run_instance(gun, interrupted_event, params_ready_event, task_queue, start_time):
-    gun.setup()
     try:
         while not interrupted_event.is_set():
             # Read with retry while params are feeding
@@ -106,33 +61,17 @@ def run_instance(gun, interrupted_event, params_ready_event, task_queue, start_t
                 except Empty:
                     break
             shoot_with_delay(task, gun, start_time, interrupted_event)
-        else:
-            # clear queue if test was interrupted
-            while True:  # can't check with queue.empty() because of multiprocessing
-                try:
-                    task_queue.get_nowait()
-                except Empty:
-                    break
     finally:
-        logger.debug('Tearing down scenario')
-        gun.teardown()
+        # clear queue if test was interrupted
+        while True:  # can't check with queue.empty() because of multiprocessing
+            try:
+                task_queue.get_nowait()
+            except Empty:
+                break
 
 
-
-def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event):
+def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event, start_time):
     logger.info("Started shooter worker: %s", mp.current_process().name)
-    # loop = asyncio.new_event_loop()
-    # asyncio.set_event_loop(loop)
-    start_time = time.time()
-
-    # futures = [async_shooter(i, gun, task_queue, params_ready_event, interrupted_event, start_time) for i in range(n_of_instances)]
-    # gathered = asyncio.gather(*futures)
-    # try:
-    #     loop.run_until_complete(run_with_aiohttp_session(loop, gun, task_queue, params_ready_event,
-    #                                                      interrupted_event, start_time, n_of_instances))
-    # finally:
-    #     logger.info('Closing worker %s', mp.current_process().name)
-    #     loop.close()
     try:
         threads = [threading.Thread(target=run_instance, args=(gun, interrupted_event, params_ready_event,
                                                                task_queue, start_time))
@@ -210,7 +149,7 @@ Gun: {gun.__class__.__name__}
         self.workers = [
             mp.Process(target=run_worker,
                        args=(self.instances_per_worker, self.task_queue, self.gun,
-                             self.params_ready_event, self.interrupted_event),
+                             self.params_ready_event, self.interrupted_event, self.start_time),
                        name="%s-%s" % (self.name, i))
             for i in range(0, self.workers_n)]
 
