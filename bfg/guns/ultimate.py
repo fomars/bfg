@@ -3,11 +3,17 @@ Ultimate gun
 '''
 import asyncio
 import imp
+import traceback
+
 from .base import GunBase, Sample
 import logging
 
 
 logger = logging.getLogger(__name__)
+
+
+class GunSetupError(Exception):
+    pass
 
 
 class UltimateGun(GunBase):
@@ -44,11 +50,19 @@ class UltimateGun(GunBase):
 
     def setup(self):
         if callable(getattr(self.load_test, "setup", None)):
-            self.load_test.setup(self.init_param)
+            try:
+                self.load_test.setup(self.init_param)
+            except:
+                traceback.print_exc()
+                raise GunSetupError
 
     def teardown(self):
         if callable(getattr(self.load_test, "teardown", None)):
-            self.load_test.teardown()
+            try:
+                self.load_test.teardown()
+            except:
+                logger.error('Teardown error:')
+                traceback.print_exc()
 
     def shoot(self, task):
         marker = task.marker.rsplit("#", 1)[0]  # support enum_ammo

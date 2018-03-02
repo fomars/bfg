@@ -3,6 +3,7 @@ import logging
 import multiprocessing as mp
 import signal
 import threading
+import traceback
 from multiprocessing.managers import SyncManager
 import time
 from collections import namedtuple
@@ -10,6 +11,7 @@ from queue import Empty, Full
 
 import aiohttp
 
+from bfg.guns.ultimate import UltimateGun, GunSetupError
 from .module_exceptions import ConfigurationError
 from .util import FactoryBase
 
@@ -35,8 +37,10 @@ def shoot_with_delay(task, gun, start_time, interrupted_event):
         gun.shoot(task)
 
 
-def run_instance(gun, interrupted_event, params_ready_event, task_queue, start_time):
+def run_instance(gun_config, interrupted_event, params_ready_event, task_queue, results_queue, start_time):
+    gun = UltimateGun(gun_config, results_queue)
     try:
+        gun.setup()
         while not interrupted_event.is_set():
             # Read with retry while params are feeding
             if not params_ready_event.is_set():
@@ -61,20 +65,24 @@ def run_instance(gun, interrupted_event, params_ready_event, task_queue, start_t
                 except Empty:
                     break
             shoot_with_delay(task, gun, start_time, interrupted_event)
+        else:
+            # clear queue if test was interrupted
+            while True:  # can't check with queue.empty() because of multiprocessing
+                try:
+                    task_queue.get_nowait()
+                except Empty:
+                    break
+    except GunSetupError:
+        logger.error('Setup error')
     finally:
-        # clear queue if test was interrupted
-        while True:  # can't check with queue.empty() because of multiprocessing
-            try:
-                task_queue.get_nowait()
-            except Empty:
-                break
+        gun.teardown()
 
 
-def run_worker(n_of_instances, task_queue, gun, params_ready_event, interrupted_event, start_time):
+def run_worker(n_of_instances, task_queue, gun_config, results_queue, params_ready_event, interrupted_event, start_time):
     logger.info("Started shooter worker: %s", mp.current_process().name)
     try:
-        threads = [threading.Thread(target=run_instance, args=(gun, interrupted_event, params_ready_event,
-                                                               task_queue, start_time))
+        threads = [threading.Thread(target=run_instance, args=(gun_config, interrupted_event, params_ready_event,
+                                                               task_queue, results_queue, start_time))
                    for i in range(n_of_instances)]
         [thread.start() for thread in threads]
         [thread.join() for thread in threads]
@@ -111,25 +119,22 @@ class BFG(object):
     and feeds them with tasks
     '''
 
-    def __init__(self, gun, load_plan, results, name, workers_num, instances_per_worker):
+    def __init__(self, gun_config, load_plan, results, name, workers_num, instances_per_worker):
         self.name = name
         self.workers_n = workers_num
-        self.gun = gun
-        self.gun.results = results
+        self.gun_config = gun_config
+        self.results_queue = results
         self.load_plan = load_plan
         self.instances_per_worker = instances_per_worker
         logger.info(
             '''
 Name: {name}
 Instances: {instances}
-Gun: {gun.__class__.__name__}
 '''.format(
                 name=self.name,
                 instances=self.workers_n,
-                gun=gun,
+                # gun=gun_class,
             ))
-        # self.manager = SyncManager()
-        # self.manager.start(mgr_init)
         self.task_queue = mp.Queue(4096)
         self.params_ready_event = mp.Event()
         self.interrupted_event = mp.Event()
@@ -143,12 +148,9 @@ Gun: {gun.__class__.__name__}
     def start(self):
         self.p_feeder.start()
         self.start_time = time.time()
-        # self.workers = [ProcessWorker(self.gun, self.task_queue, self.start_time,
-        #                               self.instances_per_worker, name="%s-%s" % (self.name, i))
-        #                 for i in range(0, self.workers_n)]
         self.workers = [
             mp.Process(target=run_worker,
-                       args=(self.instances_per_worker, self.task_queue, self.gun,
+                       args=(self.instances_per_worker, self.task_queue, self.gun_config, self.results_queue,
                              self.params_ready_event, self.interrupted_event, self.start_time),
                        name="%s-%s" % (self.name, i))
             for i in range(0, self.workers_n)]
@@ -158,6 +160,11 @@ Gun: {gun.__class__.__name__}
 
     def interrupt(self):
         self.interrupted_event.set()
+        while True:  # can't check with queue.empty() because of multiprocessing
+            try:
+                self.task_queue.get_nowait()
+            except Empty:
+                break
 
     async def wait_for_finish(self, timeout=2):
         while self.p_feeder.is_alive():
@@ -199,8 +206,7 @@ class BFGFactory(FactoryBase):
                 for ts, (marker, data) in zip(schedule, ammo))
             return BFG(
                 name=bfg_name,
-                gun=self.component_factory.get_factory(
-                    'gun', bfg_config.get('gun')),
+                gun_config=self.component_factory.config['gun'].get(bfg_config.get('gun')),
                 load_plan=lp,
                 workers_num=bfg_config.get('workers'),
                 results=self.component_factory.get_factory(

@@ -87,8 +87,8 @@ class StopWatch(object):
 
 class GunBase(object):
 
-    def __init__(self, config):
-        self.results = None
+    def __init__(self, config, results):
+        self.results = results
         self.config = config
 
     def get_option(self, option, default=None):
