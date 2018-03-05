@@ -21,7 +21,7 @@ Task = namedtuple(
     'Task', 'ts,bfg,marker,data')
 
 
-TOLERANCE = 0.0001
+TOLERANCE = 0.0005
 
 
 def shoot_with_delay(task, gun, start_time, interrupted_event):
@@ -29,7 +29,7 @@ def shoot_with_delay(task, gun, start_time, interrupted_event):
     task = task._replace(ts=start_time + (task.ts / 1000.0))
     while task.ts - time.time() > TOLERANCE:
         if not interrupted_event.is_set():
-            time.sleep(min(MAX_SLEEP, task.ts - time.time()))
+            time.sleep(max(0, min(MAX_SLEEP, task.ts - time.time())))
         else:
             logger.debug('Interrupting scheduled test')
             return
@@ -160,6 +160,9 @@ Instances: {instances}
 
     def interrupt(self):
         self.interrupted_event.set()
+        self.purge_queue()
+
+    def purge_queue(self):
         while True:  # can't check with queue.empty() because of multiprocessing
             try:
                 self.task_queue.get_nowait()
@@ -167,16 +170,19 @@ Instances: {instances}
                 break
 
     async def wait_for_finish(self, timeout=2):
-        while self.p_feeder.is_alive():
-            await asyncio.sleep(timeout)
-        else:
-            self.p_feeder.join()
-            logger.info('Feeder joined.')
+        # while self.p_feeder.is_alive():
+        #     await asyncio.sleep(timeout)
+        # else:
+        #     self.p_feeder.join()
+        #     logger.info('Feeder joined.')
 
         while any(worker.is_alive() for worker in self.workers):
             logger.info('Some worker is still alive')
             await asyncio.sleep(timeout)
         else:
+            self.purge_queue()
+            self.p_feeder.join()
+            logger.info('Feeder joined.')
             [worker.join() for worker in self.workers]
             logger.info('All workers joined')
 
