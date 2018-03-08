@@ -45,7 +45,7 @@ def run_instance(gun_config, interrupted_event, params_ready_event, task_queue, 
             # Read with retry while params are feeding
             if not params_ready_event.is_set():
                 try:
-                    task = task_queue.get()
+                    task = task_queue.get_nowait()
                     if not task:
                         logger.info(
                             "Got poison pill. Exiting %s",
@@ -85,6 +85,19 @@ def run_worker(n_of_instances, task_queue, gun_config, results_queue, params_rea
                                                                task_queue, results_queue, start_time))
                    for i in range(n_of_instances)]
         [thread.start() for thread in threads]
+        # finished = set()
+        # while not interrupted_event.is_set():
+        #     for thread in threads:
+        #         thread.join(timeout=2)
+        #         if thread.is_alive():
+        #             continue
+        #         else:
+        #             finished.add(thread)
+        #     if finished == set(threads):
+        #         logger.info('All threads of worker {} finished'.format(mp.current_process().name))
+        #         break
+        # else:
+        #
         [thread.join() for thread in threads]
     finally:
         pass
@@ -156,6 +169,7 @@ Instances: {instances}
             for i in range(0, self.workers_n)]
 
         for process in self.workers:
+            process.daemon = True
             process.start()
 
     def interrupt(self):
