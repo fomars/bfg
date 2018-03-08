@@ -2,6 +2,9 @@
 Data aggregation facilities.
 '''
 # coding=utf-8
+import io
+import json
+import os
 import threading as th
 import queue
 import multiprocessing as mp
@@ -152,8 +155,9 @@ class CachingAggregator(object):
             },
             "rt": {
                 "avg": df.rt.mean(),
-                "quantiles": q_to_dict(df.rt.quantile(
-                    [0, .25, .5, .75, .9, .99, 1])),
+                "quantiles": q_to_dict(df.rt.quantile([0, .25, .5, .75, .8, .85, .9, .95, .98, .99, 1])),
+                'min': int(df.rt.min()),
+                'max': int(df.rt.max())
             }
         }
 
@@ -186,9 +190,69 @@ class LoggingListener(object):
                 ts=arrow.get(ts).to(tz.gettz()).format('HH:mm:ss'),
                 rps=data.get('rps'),
                 rt_avg=rt_stats.get('avg') / 1000,
-                rt_q99=rt_stats.get('quantiles').get('99') / 1000
+                rt_q99=rt_stats.get('quantiles').get(99) / 1000
             )
         )
+
+
+class TADWriter(object):
+
+    def __init__(self):
+        testdir=os.path.join(os.getcwd(), time.strftime("%Y%m%d-%H%M%S"))
+        os.mkdir(testdir)
+
+        self.data_and_stats_stream = io.open(os.path.join(testdir, 'test_data.tad'), mode='w')
+
+    def publish(self, ts, data):
+        quantiles = data['overall']['rt']['quantiles']
+        quantiles_keys = [50, 75, 80, 85, 90, 95, 98, 99, 100]
+        quantiles_values = [quantiles[k] for k in quantiles_keys]
+
+        tank_aggregated_data = {
+            "tagged": {},
+            "overall": {
+                "size_in": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "latency": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "interval_real": {
+                    "q": {
+                        "q": quantiles_keys,
+                        "value": quantiles_values
+                    },
+                    "min": data['overall']['rt']['min'],
+                    "max": data['overall']['rt']['max'],
+                    "len": 2,
+                    "hist": {"data": [], "bins": []},
+                    "total": 1598170
+                },
+                "interval_event": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "receive_time": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "connect_time": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "proto_code": {
+                    "count": {
+                        "200": 0
+                    }
+                },
+                "size_out": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "send_time": {"max": 0, "total": 0, "len": 2, "min": 0},
+                "net_code": {
+                    "count": {
+                        "0": 0
+                    }
+                }
+            },
+            "ts": ts
+        }
+
+
+        self.data_and_stats_stream.write(
+            '%s\n' % json.dumps({
+                'data': tank_aggregated_data,
+                'stats': {"metrics": {
+                    "instances": 1,
+                    "reqps": data.get('rps')
+                },
+                "ts": ts}
+            }))
 
 
 class AggregatorFactory(FactoryBase):
@@ -200,7 +264,7 @@ class AggregatorFactory(FactoryBase):
         super().__init__(component_factory)
         self.results = CachingAggregator(
             self.event_loop,
-            listeners=[LoggingListener()])
+            listeners=[LoggingListener(), TADWriter()])
 
     def get(self, key):
         if key in self.factory_config:

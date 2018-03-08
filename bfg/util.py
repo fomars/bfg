@@ -105,7 +105,7 @@ def q_to_dict(df):
     if isinstance(df, float):
         return df
     return {
-        str(int(k * 100)): v
+        int(k * 100): v
         for k, v in df.to_dict().items()}
 
 
