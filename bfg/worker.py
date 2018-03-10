@@ -113,7 +113,7 @@ def feed_params(load_plan, params_queue, params_ready_event, interrupted_event, 
                 break
             except Full:
                 logger.debug("Params queue is full")
-                time.sleep(0.1)
+                time.sleep(0)
         else:
             logger.info('Feeding interrupted')
             break
@@ -148,7 +148,7 @@ Instances: {instances}
                 instances=self.workers_n,
                 # gun=gun_class,
             ))
-        self.task_queue = mp.Queue(4096)
+        self.task_queue = mp.Queue(4096*4)
         self.params_ready_event = mp.Event()
         self.interrupted_event = mp.Event()
         self.p_feeder = mp.Process(target=feed_params, args=(self.load_plan,
