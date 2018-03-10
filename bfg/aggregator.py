@@ -5,7 +5,6 @@ Data aggregation facilities.
 import io
 import json
 import os
-import threading as th
 import queue
 import multiprocessing as mp
 from .module_exceptions import ConfigurationError
@@ -15,7 +14,6 @@ from .util import q_to_dict
 import asyncio
 import time
 from dateutil import tz
-import numpy as np
 import pandas as pd
 import arrow
 import logging
@@ -197,9 +195,9 @@ class LoggingListener(object):
 
 class TADWriter(object):
 
-    def __init__(self):
-        testdir=os.path.join(os.getcwd(), time.strftime("%Y%m%d-%H%M%S"))
-        os.mkdir(testdir)
+    def __init__(self, testdir):
+        # testdir=os.path.join(os.getcwd(), time.strftime("%Y%m%d-%H%M%S"))
+        # os.mkdir(testdir)
 
         self.data_and_stats_stream = io.open(os.path.join(testdir, 'test_data.tad'), mode='w')
 
@@ -260,11 +258,11 @@ class AggregatorFactory(FactoryBase):
 
     FACTORY_NAME = "aggregator"
 
-    def __init__(self, component_factory):
+    def __init__(self, component_factory, testdir):
         super().__init__(component_factory)
         self.results = CachingAggregator(
             self.event_loop,
-            listeners=[LoggingListener(), TADWriter()])
+            listeners=[LoggingListener(), TADWriter(testdir)])
 
     def get(self, key):
         if key in self.factory_config:

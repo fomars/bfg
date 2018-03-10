@@ -1,8 +1,13 @@
 ''' Load test: entry point '''
+import os
 import signal
 
+import time
+
+import yaml
+
 from .worker import BFG
-from .config import ComponentFactory
+from .config  import ComponentFactory
 import asyncio
 import logging
 
@@ -27,9 +32,16 @@ class LoadTest(object):
     def _test(self):
         ''' Main coroutine. Manage components' lifecycle '''
 
+        testdir = os.path.join(os.getcwd(), time.strftime("%Y%m%d-%H%M%S"))
+        os.mkdir(testdir)
+
+        config_copy_path = os.path.join(testdir, 'load.yaml')
+        with open(config_copy_path, 'w') as f:
+            yaml.dump(self.config, f)
+
         # Configure factories using config files
         logger.info("Configuring component factory")
-        cf = ComponentFactory(self.config, self.event_loop)
+        cf = ComponentFactory(self.config, self.event_loop, testdir)
 
         # Create workers using 'bfg' section from config
         logger.info("Creating workers")

@@ -11,7 +11,7 @@ LOG = logging.getLogger(__name__)
 
 
 class ComponentFactory(object):
-    def __init__(self, config, event_loop):
+    def __init__(self, config, event_loop, testdir):
         self.event_loop = event_loop
         self.config = config
         self.factories = {
@@ -19,7 +19,7 @@ class ComponentFactory(object):
             'ammo': AmmoFactory(self),
             'gun': GunFactory(self),
             'bfg': BFGFactory(self),
-            'aggregator': AggregatorFactory(self),
+            'aggregator': AggregatorFactory(self, testdir),
         }
 
     def get_config(self, factory):
