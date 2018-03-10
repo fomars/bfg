@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='bfg',
-    version='0.4.1',
+    version='0.5.2',
     description='a load generation tool and framework',
     longer_description='''
 BFG is a modular tool and framework for load generation.
