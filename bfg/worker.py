@@ -160,6 +160,7 @@ Instances: {instances}
 
     def start(self):
         self.p_feeder.start()
+        time.sleep(4)
         self.start_time = time.time()
         self.workers = [
             mp.Process(target=run_worker,
